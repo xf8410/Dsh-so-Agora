@@ -1,6 +1,8 @@
-# 06:42:11 · 附件3 of 4 — hualuo 目录清单命令输出（原文，客户端截断）
+# 06:42:11 · 附件3 of 4 — hualuo 目录清单命令输出（原文，源文本在 10000 字符处截断）
 
 （来源：Transfer Dock_Text_20261104063836.txt）
+
+> 说明（2026-11-04 06:44 核）：同一消息里另三个附件（HARD-GATES 298 行、UmaWorkbenchService 413 行、ObserveClient 248 行）字符数均超过 10000 且**完整送达**，故本次截断不发生在 Agora 接收端；`<NOTE>Result is longer than 10000 characters</NOTE>` 是这份源文本自带的内容残留（上一轮工具输出/导出时的截断标记）。以下照原样保存，未补写。
 
 cd /mnt/agents/work/hualuo-repo-guardian && find app engine -type f | sort | head -240; printf '\n--- manifests ---\n'; find app engine -name AndroidManifest.xml -print -exec cat {} \;
 app/build.gradle.kts
@@ -159,4 +161,4 @@ engine/src/main/kotlin/com/hualuo/engine/transfer/FileAdmission.kt
 engine/src/main/kotlin/com/hualuo/engine/transfer/FileCourierClient.kt
 engine/src/main/kotlin/com/hualuo/engine/version/VersionSource.kt
 engine/src/main/kotlin/com/hualuo/engine/vision/VideoPlan.kt
-engine/s〈此处原文被客户端截断，后续内容未随消息送达〉
+engine/s〈源文本在此处断（10000 字符上限），其后内容未随消息送达〉
