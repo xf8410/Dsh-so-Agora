@@ -1,0 +1,57 @@
+name: hachimi-build
+
+on:
+  push:
+    paths:
+      - '.github/workflows/hachimi-build.yml'
+      - 'tools/meta_patch.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          . "$HOME/.cargo/env"
+          rustup target add aarch64-linux-android
+
+      - name: clone
+        run: git clone --depth 1 -b 2020 https://github.com/Hachimi-Hachimi/Hachimi-Unity2020.git hz
+
+      - name: patch
+        run: bash tools/meta_patch.sh hz
+
+      - name: build
+        run: |
+          . "$HOME/.cargo/env"
+          NDK=$(ls -d "$ANDROID_HOME"/ndk/* | tail -1)
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$TC/aarch64-linux-android26-clang"
+          export CXX_aarch64_linux_android="$TC/aarch64-linux-android26-clang++"
+          export AR_aarch64_linux_android="$TC/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TC/aarch64-linux-android26-clang++"
+          export CXXSTDLIB="c++_static"
+          export RUSTFLAGS="-C link-arg=-lc++_static -C link-arg=-lc++abi"
+          cd hz
+          cargo build --release --target aarch64-linux-android 2>&1 | tail -30
+          cp target/aarch64-linux-android/release/libhachimi.so "$GITHUB_WORKSPACE/libhachimi-sig.so"
+
+      - name: publish
+        if: always()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          if [ -f libhachimi-sig.so ]; then
+            NAME="libhachimi-sig-$(date -u +%m%d-%H%M).so"
+            cp libhachimi-sig.so "$NAME"
+            gh release view builds -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create builds -R "$GITHUB_REPOSITORY" --title builds --notes builds
+            gh release upload builds "$NAME" -R "$GITHUB_REPOSITORY" --clobber
+          fi
