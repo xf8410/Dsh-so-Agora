@@ -1,0 +1,200 @@
+name: blackbox-build
+
+# 容器构建：固定签名 + 权限 + WebView + nativelib 重定向 + 晚加载 + 关闭崩溃恢复 + 去掉无关链接
+on:
+  push:
+    paths:
+      - '.github/workflows/blackbox-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: keystore
+        run: |
+          mkdir -p ci
+          if [ ! -f ci/bb.jks ]; then
+            keytool -genkeypair -v -keystore ci/bb.jks -alias bb -keyalg RSA -keysize 2048 \
+              -validity 10000 -storepass bbpass12 -keypass bbpass12 \
+              -dname "CN=BlackBoxCI,OU=DSH,O=Uma,L=NA,S=NA,C=CN"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add -f ci/bb.jks
+            git commit -m "ci: fixed keystore" || true
+            git pull --rebase --autostash || true
+            git push || true
+          fi
+
+      - name: clone
+        run: |
+          git clone --depth 1 https://github.com/ALEX5402/NewBlackbox.git upstream
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;29.0.13846066" "platforms;android-36" > /dev/null 2>&1 || true
+
+      - name: patch
+        run: |
+          python3 - upstream "$GITHUB_WORKSPACE" <<'PY'
+          import re, sys, pathlib
+          root = pathlib.Path(sys.argv[1]); ws = pathlib.Path(sys.argv[2])
+
+          gb = root / "app/build.gradle"
+          g = gb.read_text(encoding="utf-8")
+          if "bbci_keystore" not in g:
+              sig = ("    signingConfigs {\n        bbci_keystore {\n"
+                     "            storeFile file(\"%s\")\n"
+                     "            storePassword 'bbpass12'\n            keyAlias 'bb'\n"
+                     "            keyPassword 'bbpass12'\n        }\n    }\n" % (ws / "ci" / "bb.jks"))
+              g = g.replace("    defaultConfig {", sig + "    defaultConfig {", 1)
+              g = re.sub(r"(buildTypes\s*\{)", r"\1\n        debug { signingConfig signingConfigs.bbci_keystore }", g, count=1)
+              gb.write_text(g, encoding="utf-8")
+              print("ok sign")
+
+          mf = root / "app/src/main/AndroidManifest.xml"
+          m = mf.read_text(encoding="utf-8")
+          if "MANAGE_EXTERNAL_STORAGE" not in m:
+              a = '<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"'
+              if a in m:
+                  mf.write_text(m.replace(a, '<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\n    ' + a, 1), encoding="utf-8")
+                  print("ok manifest")
+
+          wv = root / "Bcore/src/main/java/top/niunaijun/blackbox/fake/service/WebViewProxy.java"
+          s = wv.read_text(encoding="utf-8")
+          anchor = ("                if (args != null && args.length > 0 && args[0] instanceof Context) {\n"
+                    "                    context = (Context) args[0];")
+          if anchor in s:
+              s = s.replace(anchor, anchor + ("\n                    Context __host = BlackBoxCore.getContext();\n"
+                                              "                    if (__host != null) { args[0] = __host; context = __host; }"), 1)
+              wv.write_text(s, encoding="utf-8")
+              print("ok webview")
+
+          bt = root / "Bcore/src/main/java/top/niunaijun/blackbox/app/BActivityThread.java"
+          b = bt.read_text(encoding="utf-8")
+          anchor3 = "        Context packageContext = createPackageContext(applicationInfo);"
+          setup = (
+            "        android.util.Log.i(\"BB_INJECT\", \"guest processName=\" + processName);\n"
+            "        if (\"com.bilibili.umamusu\".equals(processName)) {\n"
+            "            try {\n"
+            "                android.content.Context __ctx = top.niunaijun.blackbox.BlackBoxCore.getContext();\n"
+            "                java.io.File __srcDir = new java.io.File(applicationInfo.nativeLibraryDir);\n"
+            "                java.io.File __nl = new java.io.File(__ctx.getFilesDir(), \"nativelib\");\n"
+            "                if (!__nl.exists()) { __nl.mkdirs(); }\n"
+            "                java.io.File __h = new java.io.File(__nl, \"libhachimi.so\");\n"
+            "                java.io.File __hsrc = new java.io.File(\"/sdcard/Download/libhachimi.so\");\n"
+            "                if (__hsrc.exists() && (!__h.exists() || __h.length() != __hsrc.length())) {\n"
+            "                    java.io.InputStream __in = new java.io.FileInputStream(__hsrc);\n"
+            "                    java.io.OutputStream __out = new java.io.FileOutputStream(__h);\n"
+            "                    byte[] __buf = new byte[262144]; int __n;\n"
+            "                    while ((__n = __in.read(__buf)) > 0) { __out.write(__buf, 0, __n); }\n"
+            "                    __in.close(); __out.close();\n"
+            "                }\n"
+            "                java.io.File[] __fs = __srcDir.listFiles();\n"
+            "                if (__fs != null) for (java.io.File __f : __fs) {\n"
+            "                    if (!__f.getName().endsWith(\".so\")) continue;\n"
+            "                    if (__f.getName().equals(\"libmain.so\")) continue;\n"
+            "                    java.io.File __t = new java.io.File(__nl, __f.getName());\n"
+            "                    if (__t.exists()) continue;\n"
+            "                    try { android.system.Os.symlink(__f.getAbsolutePath(), __t.getAbsolutePath()); } catch (Throwable __e) {}\n"
+            "                }\n"
+            "                java.io.File __lm = new java.io.File(__nl, \"libmain.so\");\n"
+            "                if (__lm.exists()) __lm.delete();\n"
+            "                android.system.Os.symlink(new java.io.File(__srcDir, \"libmain.so\").getAbsolutePath(), __lm.getAbsolutePath());\n"
+            "                java.io.File __ol = new java.io.File(__nl, \"libmain_orig.so\");\n"
+            "                if (__ol.exists()) __ol.delete();\n"
+            "                android.system.Os.symlink(new java.io.File(__srcDir, \"libmain.so\").getAbsolutePath(), __ol.getAbsolutePath());\n"
+            "                java.io.File __stale = new java.io.File(__ctx.getFilesDir(), \"libmain.so\");\n"
+            "                if (__stale.exists()) __stale.delete();\n"
+            "                applicationInfo.nativeLibraryDir = __nl.getAbsolutePath();\n"
+            "                try {\n"
+            "                    java.io.File __cfgSrc = new java.io.File(\"/sdcard/Download/hachimi_config.json\");\n"
+            "                    java.io.File __cfgDir = new java.io.File(\"/sdcard/Android/media/com.bilibili.umamusu/hachimi\");\n"
+            "                    if (!__cfgDir.exists()) __cfgDir.mkdirs();\n"
+            "                    java.io.File __cfgDst = new java.io.File(__cfgDir, \"config.json\");\n"
+            "                    if (__cfgSrc.canRead()) {\n"
+            "                        java.io.InputStream __ci = new java.io.FileInputStream(__cfgSrc);\n"
+            "                        java.io.OutputStream __co = new java.io.FileOutputStream(__cfgDst);\n"
+            "                        byte[] __cb = new byte[8192]; int __cn;\n"
+            "                        while ((__cn = __ci.read(__cb)) > 0) { __co.write(__cb, 0, __cn); }\n"
+            "                        __ci.close(); __co.close();\n"
+            "                    }\n"
+            "                } catch (Throwable __ce) { }\n"
+            "            } catch (Throwable t) { android.util.Log.e(\"BB_INJECT\", \"prep failed\", t); }\n"
+            "        }\n")
+          loadblock = (
+            "\n        if (\"com.bilibili.umamusu\".equals(processName)) {\n"
+            "            try {\n"
+            "                java.io.File __nl2 = new java.io.File(top.niunaijun.blackbox.BlackBoxCore.getContext().getFilesDir(), \"nativelib\");\n"
+            "                final String __hPath = new java.io.File(__nl2, \"libhachimi.so\").getAbsolutePath();\n"
+            "                new Thread(new Runnable() { public void run() {\n"
+            "                    try {\n"
+            "                        Thread.sleep(8000);\n"
+            "                        System.load(__hPath);\n"
+            "                        android.util.Log.i(\"BB_INJECT\", \"hachimi loaded\");\n"
+            "                    } catch (Throwable __t) { android.util.Log.e(\"BB_INJECT\", \"load failed\", __t); }\n"
+            "                } }).start();\n"
+            "            } catch (Throwable t) { android.util.Log.e(\"BB_INJECT\", \"load block failed\", t); }\n"
+            "        }\n")
+          if anchor3 in b and "BB_INJECT" not in b:
+              b = b.replace(anchor3, setup + anchor3, 1)
+              b = b.replace(anchor3, anchor3 + loadblock, 1)
+              bt.write_text(b, encoding="utf-8")
+              print("ok nativelib+load")
+
+          cm = root / "Bcore/src/main/java/top/niunaijun/blackbox/utils/CrashMonitor.java"
+          if cm.exists():
+              c = cm.read_text(encoding="utf-8")
+              old_h = "    public static void handleCrash(String crashType, Thread thread, Throwable throwable) {\n        try {"
+              new_h = ("    public static void handleCrash(String crashType, Thread thread, Throwable throwable) {\n"
+                       "        if (true) { return; }\n"
+                       "        try {")
+              if old_h in c:
+                  c = c.replace(old_h, new_h, 1)
+                  cm.write_text(c, encoding="utf-8")
+                  print("ok crashmonitor(no recovery)")
+
+          zh = {"installed_app": "已安装应用", "empty_empty": "空空如也", "filter": "过滤",
+                "setting": "设置", "done": "完成", "cancel": "取消",
+                "install_success": "安装成功", "install_fail": "安装失败：%s",
+                "uninstall_success": "卸载成功", "other": "其他"}
+          sx = root / "app/src/main/res/values/strings.xml"
+          tx = sx.read_text(encoding="utf-8")
+          for k, v in zh.items():
+              tx = re.sub(r'<string name="%s">.*?</string>' % re.escape(k),
+                          '<string name="%s">%s</string>' % (k, v), tx, count=1, flags=re.S)
+          tx = re.sub(r'(<string name="[^"]*">)([^<]*)(</string>)',
+                      lambda mm: mm.group(1) + (" " if re.search(r'http|github|qq|telegram|discord|群|交流|开源|赞助|捐赠', mm.group(2), re.I) else mm.group(2)) + mm.group(3),
+                      tx)
+          sx.write_text(tx, encoding="utf-8")
+          print("ok strings(+去链接)")
+          PY
+
+      - name: build
+        run: |
+          cd upstream
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon 2>&1 | tail -25
+          find app/build/outputs/apk -name "*universal*debug*.apk" -o -name "*debug*.apk" | head -3
+
+      - name: publish
+        if: always()
+        run: |
+          APK=$(find upstream/app/build/outputs/apk -name "*universal*debug*.apk" | head -1)
+          [ -z "$APK" ] && APK=$(find upstream/app/build/outputs/apk -name "*debug*.apk" | head -1)
+          if [ -n "$APK" ]; then
+            NAME="blackbox-clean-$(date -u +%m%d-%H%M).apk"
+            cp "$APK" "$NAME"
+            gh release view builds -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create builds -R "$GITHUB_REPOSITORY" --title builds --notes builds
+            gh release upload builds "$NAME" -R "$GITHUB_REPOSITORY" --clobber
+          fi
