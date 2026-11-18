@@ -1,0 +1,47 @@
+name: blackbox-resign
+
+# 把已构建的 blackbox APK 用旧签名重新签一次（覆盖安装不清数据）
+on:
+  push:
+    paths:
+      - '.github/workflows/blackbox-resign.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  resign:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps
+        run: |
+          base64 -d ci/bb.jks.b64 > ci/bb.jks
+          ls -l ci/bb.jks
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | tail -1)
+          echo "BT=$BT" >> $GITHUB_ENV
+
+      - name: fetch apk
+        run: |
+          gh release download builds -R "$GITHUB_REPOSITORY" -p 'blackbox-clean-*.apk' --dir in --clobber
+          ls -l in
+
+      - name: resign
+        run: |
+          APK=$(ls in/blackbox-clean-*.apk | tail -1)
+          echo "apk=$APK"
+          cp "$APK" work.apk
+          zip -d work.apk 'META-INF/*' > /dev/null 2>&1 || true
+          "$BT/zipalign" -p -f 4 work.apk aligned.apk
+          "$BT/apksigner" sign --ks ci/bb.jks --ks-pass pass:bbpass12 --key-pass pass:bbpass12 \
+            --ks-key-alias bb --out blackbox-clean-signed.apk aligned.apk
+          "$BT/apksigner" verify --print-certs blackbox-clean-signed.apk | head -3
+          ls -l blackbox-clean-signed.apk
+
+      - name: publish
+        run: |
+          gh release upload builds blackbox-clean-signed.apk -R "$GITHUB_REPOSITORY" --clobber
