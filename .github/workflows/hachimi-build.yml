@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/hachimi-build.yml'
       - 'tools/meta_patch.sh'
+      - 'tools/kill_patch.sh'
   workflow_dispatch:
 
 permissions:
@@ -28,7 +29,9 @@ jobs:
         run: git clone --depth 1 -b 2020 https://github.com/Hachimi-Hachimi/Hachimi-Unity2020.git hz
 
       - name: patch
-        run: bash tools/meta_patch.sh hz
+        run: |
+          bash tools/meta_patch.sh hz
+          bash tools/kill_patch.sh hz
 
       - name: build
         run: |
@@ -43,15 +46,15 @@ jobs:
           export RUSTFLAGS="-C link-arg=-lc++_static -C link-arg=-lc++abi"
           cd hz
           cargo build --release --target aarch64-linux-android 2>&1 | tail -30
-          cp target/aarch64-linux-android/release/libhachimi.so "$GITHUB_WORKSPACE/libhachimi-sig.so"
+          cp target/aarch64-linux-android/release/libhachimi.so "$GITHUB_WORKSPACE/libhachimi-kill2.so"
 
       - name: publish
         if: always()
         run: |
           cd "$GITHUB_WORKSPACE"
-          if [ -f libhachimi-sig.so ]; then
-            NAME="libhachimi-sig-$(date -u +%m%d-%H%M).so"
-            cp libhachimi-sig.so "$NAME"
+          if [ -f libhachimi-kill2.so ]; then
+            NAME="libhachimi-kill2-$(date -u +%m%d-%H%M).so"
+            cp libhachimi-kill2.so "$NAME"
             gh release view builds -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create builds -R "$GITHUB_REPOSITORY" --title builds --notes builds
             gh release upload builds "$NAME" -R "$GITHUB_REPOSITORY" --clobber
           fi
